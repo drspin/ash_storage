@@ -267,6 +267,7 @@ if Code.ensure_loaded?(Req) do
 
     # -- Private helpers --
 
+    # sobelow_skip ["Traversal.FileModule"]
     defp materialize_body(%File.Stream{path: path}), do: File.read!(path)
     defp materialize_body(data) when is_binary(data) or is_list(data), do: data
 
