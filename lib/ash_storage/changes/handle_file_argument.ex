@@ -293,7 +293,14 @@ defmodule AshStorage.Changes.HandleFileArgument do
     key = AshStorage.generate_key()
     checksum = :crypto.hash(:md5, data) |> Base.encode64()
     byte_size = byte_size(data)
-    ctx = Context.put_expected_md5(ctx, checksum)
+
+    # See `AshStorage.Changes.Attach.upload_and_create_blob/6` for the
+    # rationale on threading the blob's content_type / filename into the
+    # context before calling `service_mod.upload/3`.
+    ctx =
+      ctx
+      |> Context.put_expected_md5(checksum)
+      |> Context.put_blob_metadata(content_type: content_type, filename: filename)
 
     with {:ok, extra_blob_attrs} <- normalize_upload(service_mod.upload(key, data, ctx)) do
       blob_resource = Info.storage_blob_resource!(resource)
@@ -327,6 +334,12 @@ defmodule AshStorage.Changes.HandleFileArgument do
   end
 
   defp read_io(%File.Stream{} = stream), do: Enum.into(stream, <<>>, &IO.iodata_to_binary/1)
+
+  # See `AshStorage.Changes.Attach.read_io/1` for the rationale on this
+  # clause and the full input contract.
+  defp read_io(%{__struct__: Plug.Upload, path: path}) when is_binary(path),
+    do: File.read!(path)
+
   defp read_io(data) when is_binary(data), do: data
   defp read_io(data) when is_list(data), do: IO.iodata_to_binary(data)
 

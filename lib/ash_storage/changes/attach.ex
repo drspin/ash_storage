@@ -252,7 +252,17 @@ defmodule AshStorage.Changes.Attach do
     key = AshStorage.generate_key()
     checksum = :crypto.hash(:md5, data) |> Base.encode64()
     byte_size = byte_size(data)
-    ctx = Context.put_expected_md5(ctx, checksum)
+
+    # Make the upload metadata visible to the service so it can record it
+    # on the underlying object — e.g. the S3 service forwards
+    # `:content_type` as the `Content-Type` header on PUT. Without this
+    # step the service would only know the bytes and the key, not what
+    # those bytes are. The blob row still receives the values via
+    # `blob_attrs` below; this just mirrors them onto the context.
+    ctx =
+      ctx
+      |> Context.put_expected_md5(checksum)
+      |> Context.put_blob_metadata(content_type: content_type, filename: filename)
 
     with {:ok, extra_blob_attrs} <- normalize_upload(service_mod.upload(key, data, ctx)) do
       blob_resource = Info.storage_blob_resource!(resource)
@@ -279,6 +289,20 @@ defmodule AshStorage.Changes.Attach do
   defp normalize_upload({:error, _} = error), do: error
 
   # -- IO helpers --
+  #
+  # Materialize the caller-supplied `io` value into the raw bytes that will
+  # be uploaded. Accepted shapes:
+  #
+  #   * `%Ash.Type.File{}` — opened and read in binary mode.
+  #   * `%File.Stream{}`   — collected into a single binary.
+  #   * `%Plug.Upload{}`   — read from disk via `File.read!/1`. Without
+  #     this clause the struct's `:path` field (a string) would match
+  #     the generic `is_binary/1` clause below and the *path* would be
+  #     uploaded as the body. See documentation/topics/file-arguments.md
+  #     for usage from Phoenix controllers.
+  #   * binary             — used verbatim as the bytes to store. Note
+  #     that this is the *bytes*, not a filesystem path.
+  #   * iodata list        — flattened into a binary.
 
   defp read_io(%Ash.Type.File{} = file) do
     {:ok, device} = Ash.Type.File.open(file, [:read, :binary])
@@ -288,6 +312,13 @@ defmodule AshStorage.Changes.Attach do
   end
 
   defp read_io(%File.Stream{} = stream), do: Enum.into(stream, <<>>, &IO.iodata_to_binary/1)
+
+  # Matched by `__struct__` atom so this module does not require `:plug`
+  # as a compile-time dependency; `Plug.Upload` is only resolved here as
+  # an atom literal.
+  defp read_io(%{__struct__: Plug.Upload, path: path}) when is_binary(path),
+    do: File.read!(path)
+
   defp read_io(data) when is_binary(data), do: data
   defp read_io(data) when is_list(data), do: IO.iodata_to_binary(data)
 
